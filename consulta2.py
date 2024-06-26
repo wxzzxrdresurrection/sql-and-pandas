@@ -1,5 +1,6 @@
 import pandas as pd
 from config import DB
+from tabulate import tabulate
 
 def empleados_por_region(db, query):
     result = db.select(query)
@@ -52,6 +53,14 @@ def rankear_ventas(df):
     print(ventas_con_clientes)
     return ventas_con_clientes
 
+def matriz(df):
+        df = df.pivot_table(index='Year', columns='RegionDescription', values='CompanyName', aggfunc='sum')
+        df = df.fillna(0)
+        convert_to_excel(df, "consulta2", "ventas_por_region_y_año")
+        valores_matriz = tabulate(df, headers='keys', tablefmt='plain')
+        print(valores_matriz)
+        return valores_matriz
+
 def convert_to_excel(df, nombre, hoja):
     df.to_excel(f"{nombre}.xlsx", sheet_name=hoja)
     
@@ -74,6 +83,6 @@ if __name__ == '__main__':
     ventas_region_año = total_clientes_year_y_region(query2, empleados_region, db)
 
     ventas_rankeadas = rankear_ventas(ventas_region_año)
-    
-    convert_to_excel(ventas_rankeadas, "consulta2", "ventas_por_region_y_año")
+
+    ventas_matriz = matriz(ventas_rankeadas)
 
