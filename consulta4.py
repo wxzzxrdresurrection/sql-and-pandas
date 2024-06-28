@@ -1,6 +1,7 @@
 from config import DB
 import pandas as pd
-from tabulate import tabulate
+import re
+from consulta2 import convert_to_excel
 
 def productos_mas_vendidos_por_categoria(db, query):
     result = db.select(query)
@@ -9,9 +10,9 @@ def productos_mas_vendidos_por_categoria(db, query):
     #Sacamos el año
     result["Year"] = result["OrderDate"].dt.year
     #Calcular el total del producto
-    result["Sales"] = result["UnitPrice"] * result["Quantity"]
+    result["SalesProduct"] = result["UnitPrice"] * result["Quantity"]
     #Columnas necesarias
-    result = result[["Year", "CategoryName", "ProductName", "Sales"]]
+    result = result[["Year", "CategoryName", "ProductName", "SalesProduct"]]
     #Agrupacion por año, categoria y producto
     result = result.groupby(["Year", "CategoryName", "ProductName"]).sum().reset_index()
     #Ordenar por categoría y total de cliente
@@ -20,11 +21,11 @@ def productos_mas_vendidos_por_categoria(db, query):
 
 def rankear_ventas_y_enumerar_years(df):
     #Ranking de ventas por año y categoria
-    df = df.assign(RankVenta=df.groupby(["Year", "CategoryName"])["Sales"].rank(ascending=False))
+    df = df.assign(RankVenta=df.groupby(["Year", "CategoryName"])["SalesProduct"].rank(ascending=False))
     #Enumerar los años
     df["YearRank"] = df.Year.rank(method="dense", ascending=False).astype(int) 
     #Ordenar por año, categoria y total de cliente
-    df = df.sort_values(by=["Year", "CategoryName", "Sales"], ascending=[False, True, False])
+    df = df.sort_values(by=["Year", "CategoryName", "SalesProduct"], ascending=[False, True, False])
     print(df)
     return df
 
@@ -34,6 +35,8 @@ def producto_mas_comprado_por_categoria_y_ultimos_years(df):
     df = df[df["YearRank"].between(1, 3)]
     #Resetear indices
     df.reset_index(drop=True, inplace=True)
+    #Columnas necesarias
+    df = df[["YearRank" ,"Year", "CategoryName", "ProductName", "SalesProduct"]]
     print(df)
     return df
 
@@ -44,34 +47,75 @@ def productos_comprados_clientes(db, query):
     #Sacamos el año
     result["Year"] = result["OrderDate"].dt.year
     #Calcular el total del producto
-    result["Sales"] = result["UnitPrice"] * result["Quantity"]
+    result["SalesCustomer"] = result["UnitPrice"] * result["Quantity"]
     #Columnas necesarias
-    result = result[["Year", "CustomerID", "CompanyName", "ProductName", "Sales"]]
+    result = result[["Year", "CustomerID", "CompanyName", "ProductName", "SalesCustomer"]]
     #Agrupacion por año, categoria y producto
-    result = result.groupby(["Year", "ProductName", "CustomerID", ]).sum().reset_index()
+    result = result.groupby(["Year", "CustomerID", "ProductName"]).sum().reset_index()
     #Ordenar por categoría y total de cliente
-    result = result.sort_values(by=["Year", "ProductName", "Sales"], ascending=[False, True, False])
+    result = result.sort_values(by=["Year", "ProductName", "SalesCustomer"], ascending=[False, True, False])
+    result.reset_index(drop=True, inplace=True)
     print(result)
     return result
 
 def clientes_productos_mas_vendidos_categoria(df, df2):
     #Unir los dataframes
-    df = pd.merge(df, df2, on=["ProductName", "Year"])
+    join = df.join(df2.set_index(["Year", "ProductName"]), on=["Year", "ProductName"], how="inner")
+    #Distinct de CompanyName
+    join["CompanyName"] = join["CompanyName"].apply(remove_repeated_patterns)
     #Ranking de ventas por año y producto descendentemente
-    df = df.assign(RankDesc=df.groupby(["Year", "ProductName"])["Sales_y"].rank(ascending=False, method="dense"))
+    join["RankDesc"] = join.SalesCustomer.rank(ascending=False, method="dense")
+    join["RankDesc"] = join.groupby(["Year", "ProductName"])["RankDesc"].rank(ascending=True, method="dense")
     #Ranking de ventas por año y producto ascendentemente
-    df = df.assign(RankAsc=df.groupby(["Year", "ProductName"])["Sales_y"].rank(ascending=True, method="dense"))
-    print(df)
-    df.to_excel("productos_clientes.xlsx", index=False)
-    return df
+    join["RankAsc"] = join.SalesCustomer.rank(ascending=True, method="dense")
+    join["RankAsc"] = join.groupby(["Year", "ProductName"])["RankAsc"].rank(ascending=True, method="dense")
+    print(join)
+    return join
+
+def remove_repeated_patterns(cell_value):
+    if pd.isna(cell_value):
+        return cell_value
+    
+    # Buscar patrones repetidos en la cadena usando regex
+    pattern = re.compile(r'(.+?)\1+')
+    match = pattern.match(cell_value)
+    if match:
+        return match.group(1)
+    return cell_value
 
 def filtro_producto_mas_y_menos_comprado(df):
     #Filtrar el producto más y menos comprado por cliente
     df = df[(df["RankDesc"] == 1) | (df["RankAsc"] == 1)]
+    #Resetear indices
+    df.reset_index(drop=True, inplace=True)
+    #Concatenar nombre de la empresa y ganancia
+    df["CompanyName"] = df["CompanyName"] + " = $" + df["SalesCustomer"].astype(str)
     #Columnas necesarias
-    df = df[["YearRank", "Year", "CategoryName", "ProductName", "CompanyName", "Sales_y"]]
+    df = df[["YearRank" ,"Year", "CategoryName", "ProductName", "CompanyName", "SalesCustomer"]]
     print(df)
     return df
+
+def change_years(value):
+    if value == 1:
+        return "Último"
+    elif value == 2:
+        return "Penúltimo"
+    else:
+        return "Antepenúltimo"
+
+def matriz(df):
+    #Columnas necesarias 
+    df = df[["YearRank", "Year", "CategoryName", "ProductName", "CompanyName"]]
+    #Agrupar con categorias y años
+    df = df.groupby(['CategoryName', 'YearRank']).apply(lambda x: ', '.join(x.apply(lambda row: f"Producto: {row['ProductName']} Clientes: {row['CompanyName']}", axis=1))).reset_index(name='Productos y Clientes')
+    #Generar la matriz
+    df = df.pivot_table(index='CategoryName', columns='YearRank', values='Productos y Clientes', aggfunc='first').reset_index()
+    #Renombrar los indexes
+    year_mapping = {1: "Último", 2: "Penúltimo", 3: "Antepenúltimo"}
+    df = df.rename(columns=year_mapping)
+    print(df)
+    convert_to_excel(df, "consulta4", "categorias con el cliente que más y menos compró")
+    #return
     
 
 if __name__ == "__main__":
@@ -99,5 +143,7 @@ if __name__ == "__main__":
 
     join_productos = clientes_productos_mas_vendidos_categoria(productos_ultimos_años, productos_clientes)
 
-    filtro_producto_mas_y_menos_comprado(join_productos)
+    categoria_con_clientes = filtro_producto_mas_y_menos_comprado(join_productos)
+
+    matriz(categoria_con_clientes)
 
